@@ -1,42 +1,39 @@
 name: factory
 
 on:
-  workflow_dispatch:               # Run button
+  workflow_dispatch:                # Green “Run workflow” button
   schedule:
-    - cron: '0 21 * * *'           # every day 21:00 KST
+    - cron: '0 21 * * *'            # Every day 21:00 KST
 
 jobs:
   run:
     runs-on: ubuntu-latest
 
     steps:
-    # 1) Check out repo
+    # 1) Pull this repo
     - uses: actions/checkout@v4
 
-    # 2) Install local inference lib
+    # 2) Install the small, offline AI runner
     - name: Install ctransformers
       run: pip install --quiet ctransformers==0.2.27 accelerate==0.28.0
 
-    # 3) Fresh model folder (delete any file first)
-    - name: Prepare model dir
+    # 3) ALWAYS start clean, then download the 350 MB model
+    - name: Get TinyLlama model
       run: |
-        rm -rf /tmp/model          # remove file or dir if it exists
-        mkdir -p /tmp/model
-
-    # 4) Download TinyLlama model (350 MB)
-    - name: Download model
-      run: |
-        wget -q -O /tmp/model/tinyllama.gguf \
+        MODEL_DIR="$RUNNER_TEMP/tinyllama_model"
+        rm -rf "$MODEL_DIR"          # delete file OR folder if it exists
+        mkdir -p  "$MODEL_DIR"
+        wget -q -O "$MODEL_DIR/tinyllama.gguf" \
           https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.q4_K_M.gguf
 
-    # 5) Pick today’s Reddit topic
+    # 4) Pick today’s Reddit topic
     - name: Pick topic
       id: topic
       run: |
         python - <<'PY'
         import requests, random
-        subs=["ADHD","GetStudying","biology"]
-        hdr={"User-Agent":"snap-study-bot"}
+        subs = ["ADHD","GetStudying","biology"]
+        hdr  = {"User-Agent":"snap-study-bot"}
         titles=[]
         for s in subs:
             url=f"https://www.reddit.com/r/{s}/top.json?t=day&limit=20"
@@ -45,16 +42,16 @@ jobs:
         print(f"::set-output name=text::{random.choice(titles)}")
         PY
 
-    # 6) Generate dashboard offline
+    # 5) Generate the dashboard completely offline
     - name: Write dashboard
       run: |
         python - <<'PY'
         from ctransformers import AutoModelForCausalLM
         import os, textwrap, re
         model = AutoModelForCausalLM.from_pretrained(
-            "/tmp/model",
+            os.environ["RUNNER_TEMP"] + "/tinyllama_model",
             model_file="tinyllama.gguf",
-            gpu_layers=0
+            gpu_layers=0          # CPU-only; works on any runner
         )
         topic="${{ steps.topic.outputs.text }}"
         prompt=textwrap.dedent(f"""
@@ -69,15 +66,15 @@ jobs:
         Output ONLY markdown.
         """)
         md = model(prompt, max_new_tokens=512)
-        md = re.sub(r'^.*?\n\n','', md, 1, re.S)
+        md = re.sub(r'^.*?\n\n','', md, 1, re.S)   # remove echoed prompt
         open('dashboard.md','w').write(md.strip())
         PY
 
-    # 7) Zip the file
+    # 6) Zip the markdown
     - name: Zip dashboard
       run: zip product.zip dashboard.md
 
-    # 8) Hand zip back
+    # 7) Hand the ZIP back so you can download it
     - uses: actions/upload-artifact@v4
       with:
         name: product
