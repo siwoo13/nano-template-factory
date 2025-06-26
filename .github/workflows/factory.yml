@@ -1,8 +1,7 @@
-# ---------- START COPY HERE ----------
 name: factory
 
 on:
-  workflow_dispatch:                # green “Run workflow” button
+  workflow_dispatch:                # green “Run” button
   schedule:
     - cron: '0 21 * * *'            # every day 21:00 KST
 
@@ -11,79 +10,70 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1) Get this repo’s code
+    # 1) Check out this repo
     - uses: actions/checkout@v4
 
-    # 2) Cache or download TinyLlama model (≈350 MB, first run only)
-    - name: Cache model
-      id: cache
-      uses: actions/cache@v4
-      with:
-        path: ${{ runner.temp }}/gguf
-        key: tinyllama-chat-q4
-
-    - name: Download model (if not in cache)
-      if: steps.cache.outputs.cache-hit != 'true'
-      run: |
-        mkdir -p "${RUNNER_TEMP}/gguf"
-        wget -q -O "${RUNNER_TEMP}/gguf/tinyllama.gguf" \
-          https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.q4_K_M.gguf
-
-    # 3) Install local AI runner (ctransformers)
+    # 2) Install the local inference library
     - name: Install ctransformers
       run: pip install --quiet ctransformers==0.2.27 accelerate==0.28.0
 
-    # 4) Pick today’s Reddit study pain-point
+    # 3) Download TinyLlama model to a fresh folder
+    - name: Download model
+      run: |
+        mkdir -p /tmp/model
+        wget -q -O /tmp/model/tinyllama.gguf \
+          https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.q4_K_M.gguf
+
+    # 4) Pick today’s Reddit topic
     - name: Pick topic
       id: topic
       run: |
         python - <<'PY'
         import requests, random
         subs = ["ADHD", "GetStudying", "biology"]
-        hdr  = {"User-Agent": "snap-study-bot"}
+        hdr = {"User-Agent": "snap-study-bot"}
         titles=[]
         for s in subs:
             url=f"https://www.reddit.com/r/{s}/top.json?t=day&limit=20"
-            j=requests.get(url, headers=hdr).json()
-            titles += [c["data"]["title"] for c in j["data"]["children"]]
+            titles += [c["data"]["title"]
+                       for c in requests.get(url, headers=hdr).json()["data"]["children"]]
         print(f"::set-output name=text::{random.choice(titles)}")
         PY
 
-    # 5) Generate the Notion-style dashboard (totally offline)
+    # 5) Generate the dashboard completely offline
     - name: Write dashboard
       run: |
         python - <<'PY'
         from ctransformers import AutoModelForCausalLM
         import os, textwrap, re
         model = AutoModelForCausalLM.from_pretrained(
-            os.environ["RUNNER_TEMP"] + "/gguf",
+            "/tmp/model",
             model_file="tinyllama.gguf",
-            gpu_layers=0            # CPU-only, works on GitHub
+            gpu_layers=0              # CPU-only
         )
-        topic="${{ steps.topic.outputs.text }}"
-        prompt=textwrap.dedent(f"""
-        You are an expert study coach.
+        topic = "${{ steps.topic.outputs.text }}"
+        prompt = textwrap.dedent(f"""
+        You are a study coach.
         Write a focused Notion markdown study dashboard about "{topic}".
         Include:
         - H1 title
         - 7-day countdown table
         - daily checklist
         - habit tracker
-        - reflection notes
+        - reflection section
         Output ONLY markdown.
         """)
-        md=model(prompt, max_new_tokens=512)
-        md=re.sub(r'^.*?\n\n','',md,1,re.S)  # strip echoed prompt
+        md = model(prompt, max_new_tokens=512)
+        md = re.sub(r'^.*?\n\n','', md, 1, re.S)   # remove echoed prompt
         open('dashboard.md','w').write(md.strip())
         PY
 
-    # 6) Zip the markdown file
+    # 6) Zip the markdown
     - name: Zip dashboard
       run: zip product.zip dashboard.md
 
-    # 7) Hand the zip back so you can download it
+    # 7) Give you the zip as an artifact
     - uses: actions/upload-artifact@v4
       with:
         name: product
         path: product.zip
-# ---------- END COPY HERE ----------
