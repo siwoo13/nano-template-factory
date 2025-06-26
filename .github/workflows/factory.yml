@@ -1,0 +1,88 @@
+▼
+name: factory
+on:
+  workflow_dispatch:            # green "Run" button
+  schedule:
+    - cron: '0 21 * * *'        # every day 21:00 KST (9 PM)
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 1️⃣  Get the repo code (needed by GitHub)
+    - uses: actions/checkout@v4
+
+    # 2️⃣  Install free local language model (Phi-3-mini, 1.8 GB)
+    - name: Install Ollama + model
+      run: |
+        curl -fsSL https://ollama.ai/install.sh | sh
+        ollama pull phi3
+
+    # 3️⃣  Pick today’s hot topic from Reddit
+    - name: Pick topic
+      id: pick
+      run: |
+        python - <<'PY'
+        import json, random, requests
+        subs = ["ADHD","GetStudying","biology"]
+        hdr  = {"User-Agent":"kid-bot"}
+        pool=[]
+        for s in subs:
+            url=f"https://www.reddit.com/r/{s}/top.json?t=day&limit=20"
+            pool += [c["data"]["title"]
+                     for c in requests.get(url, headers=hdr).json()["data"]["children"]]
+        topic=random.choice(pool)
+        print(f"::set-output name=topic::{topic}")
+        PY
+
+    # 4️⃣  Ask model to write the Notion dashboard
+    - name: Make dashboard
+      run: |
+        ollama run phi3 "Write a Notion markdown study dashboard about '${{ steps.pick.outputs.topic }}'" > dashboard.md
+
+    # 5️⃣  Zip the dashboard
+    - run: zip product.zip dashboard.md
+
+    # 6️⃣  Quick Canva-style video with an arrow hook
+    - name: Make 15-sec video
+      run: |
+        convert -size 720x1280 canvas:none arrow.png   # tiny arrow placeholder
+        ffmpeg -loop 1 -t 15 -i arrow.png -vf \
+          "drawtext=text='${{ steps.pick.outputs.topic }}':fontcolor=white:fontsize=64:y=H/2:x=W/8" \
+          video.mp4
+        ffmpeg -i video.mp4 -i arrow.png \
+          -filter_complex "[0:v][1:v]overlay=10:100:enable='between(t,7,15)'" \
+          -codec:a copy short.mp4 && mv short.mp4 video.mp4
+
+    # 7️⃣  Attach ZIP to a GitHub Release (acts like free cloud storage)
+    - uses: ncipollo/release-action@v1
+      with:
+        tag: nightly
+        artifacts: product.zip
+
+    # 8️⃣  Email buyers + members (fills in later once you add RESEND keys)
+    - name: Send email
+      if: ${{ secrets.RESEND_API_KEY != '' }}
+      env:
+        RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      run: echo "Email script here"
+
+    # 9️⃣  Upload Short, pin Ko-fi link (needs YT/TikTok tokens)
+    - name: Upload to YouTube & TikTok
+      if: ${{ secrets.YT_TOKEN != '' }}
+      run: echo "Upload + pin comment here"
+
+    # 🔟  Sunday bundle-bot (auto-packs last 7 ZIPs into $25 product)
+    - name: Bundle bot
+      if: startsWith(github.event_name, 'schedule') && (date +%u) == 7
+      env:
+        KOFI_TOKEN: ${{ secrets.KOFI_TOKEN }}
+      run: |
+        find . -name '*.zip' -mtime -7 -print | zip week.zip -@
+        curl -X POST https://ko-fi.com/api/shop/items \
+          -H "Authorization:$KOFI_TOKEN" \
+          -F "name=Week $(date +%V) Bundle" \
+          -F "price=25" \
+          -F file=@week.zip
+▲
