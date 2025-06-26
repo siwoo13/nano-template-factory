@@ -1,46 +1,51 @@
 name: factory
 
 on:
-  workflow_dispatch:                # green “Run” button
+  workflow_dispatch:               # Run button
   schedule:
-    - cron: '0 21 * * *'            # every day 21:00 KST
+    - cron: '0 21 * * *'           # every day 21:00 KST
 
 jobs:
   run:
     runs-on: ubuntu-latest
 
     steps:
-    # 1) Check out this repo
+    # 1) Check out repo
     - uses: actions/checkout@v4
 
-    # 2) Install the local inference library
+    # 2) Install local inference lib
     - name: Install ctransformers
       run: pip install --quiet ctransformers==0.2.27 accelerate==0.28.0
 
-    # 3) Download TinyLlama model to a fresh folder
+    # 3) Fresh model folder (delete any file first)
+    - name: Prepare model dir
+      run: |
+        rm -rf /tmp/model          # remove file or dir if it exists
+        mkdir -p /tmp/model
+
+    # 4) Download TinyLlama model (350 MB)
     - name: Download model
       run: |
-        mkdir -p /tmp/model
         wget -q -O /tmp/model/tinyllama.gguf \
           https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.q4_K_M.gguf
 
-    # 4) Pick today’s Reddit topic
+    # 5) Pick today’s Reddit topic
     - name: Pick topic
       id: topic
       run: |
         python - <<'PY'
         import requests, random
-        subs = ["ADHD", "GetStudying", "biology"]
-        hdr = {"User-Agent": "snap-study-bot"}
+        subs=["ADHD","GetStudying","biology"]
+        hdr={"User-Agent":"snap-study-bot"}
         titles=[]
         for s in subs:
             url=f"https://www.reddit.com/r/{s}/top.json?t=day&limit=20"
             titles += [c["data"]["title"]
-                       for c in requests.get(url, headers=hdr).json()["data"]["children"]]
+                       for c in requests.get(url,headers=hdr).json()["data"]["children"]]
         print(f"::set-output name=text::{random.choice(titles)}")
         PY
 
-    # 5) Generate the dashboard completely offline
+    # 6) Generate dashboard offline
     - name: Write dashboard
       run: |
         python - <<'PY'
@@ -49,10 +54,10 @@ jobs:
         model = AutoModelForCausalLM.from_pretrained(
             "/tmp/model",
             model_file="tinyllama.gguf",
-            gpu_layers=0              # CPU-only
+            gpu_layers=0
         )
-        topic = "${{ steps.topic.outputs.text }}"
-        prompt = textwrap.dedent(f"""
+        topic="${{ steps.topic.outputs.text }}"
+        prompt=textwrap.dedent(f"""
         You are a study coach.
         Write a focused Notion markdown study dashboard about "{topic}".
         Include:
@@ -64,15 +69,15 @@ jobs:
         Output ONLY markdown.
         """)
         md = model(prompt, max_new_tokens=512)
-        md = re.sub(r'^.*?\n\n','', md, 1, re.S)   # remove echoed prompt
+        md = re.sub(r'^.*?\n\n','', md, 1, re.S)
         open('dashboard.md','w').write(md.strip())
         PY
 
-    # 6) Zip the markdown
+    # 7) Zip the file
     - name: Zip dashboard
       run: zip product.zip dashboard.md
 
-    # 7) Give you the zip as an artifact
+    # 8) Hand zip back
     - uses: actions/upload-artifact@v4
       with:
         name: product
