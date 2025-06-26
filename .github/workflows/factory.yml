@@ -1,38 +1,39 @@
+# ---------- START COPY HERE ----------
 name: factory
 
 on:
-  workflow_dispatch:                # Run button
+  workflow_dispatch:                # green “Run workflow” button
   schedule:
-    - cron: '0 21 * * *'            # every day 21:00 KST (UTC+9)
+    - cron: '0 21 * * *'            # every day 21:00 KST
 
 jobs:
   run:
     runs-on: ubuntu-latest
 
     steps:
-    # 1️⃣  Check out repo
+    # 1) Get this repo’s code
     - uses: actions/checkout@v4
 
-    # 2️⃣  Cache or download TinyLlama (350 MB once)
+    # 2) Cache or download TinyLlama model (≈350 MB, first run only)
     - name: Cache model
       id: cache
       uses: actions/cache@v4
       with:
-        path: ~/.cache/gguf
+        path: ${{ runner.temp }}/gguf
         key: tinyllama-chat-q4
 
-    - name: Download model (first run only)
+    - name: Download model (if not in cache)
       if: steps.cache.outputs.cache-hit != 'true'
       run: |
-        mkdir -p ~/.cache/gguf
-        wget -q -O ~/.cache/gguf/tinyllama.gguf \
+        mkdir -p "${RUNNER_TEMP}/gguf"
+        wget -q -O "${RUNNER_TEMP}/gguf/tinyllama.gguf" \
           https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.q4_K_M.gguf
 
-    # 3️⃣  Install local inference library
+    # 3) Install local AI runner (ctransformers)
     - name: Install ctransformers
       run: pip install --quiet ctransformers==0.2.27 accelerate==0.28.0
 
-    # 4️⃣  Pick today’s Reddit topic
+    # 4) Pick today’s Reddit study pain-point
     - name: Pick topic
       id: topic
       run: |
@@ -43,46 +44,46 @@ jobs:
         titles=[]
         for s in subs:
             url=f"https://www.reddit.com/r/{s}/top.json?t=day&limit=20"
-            j=requests.get(url,headers=hdr).json()
+            j=requests.get(url, headers=hdr).json()
             titles += [c["data"]["title"] for c in j["data"]["children"]]
-        choice=random.choice(titles)
-        print(f"::set-output name=text::{choice}")
+        print(f"::set-output name=text::{random.choice(titles)}")
         PY
 
-    # 5️⃣  Generate dashboard locally (no API, no limits)
+    # 5) Generate the Notion-style dashboard (totally offline)
     - name: Write dashboard
       run: |
         python - <<'PY'
         from ctransformers import AutoModelForCausalLM
-        import os, re, textwrap
+        import os, textwrap, re
         model = AutoModelForCausalLM.from_pretrained(
-            os.path.expanduser("~/.cache/gguf"),
+            os.environ["RUNNER_TEMP"] + "/gguf",
             model_file="tinyllama.gguf",
-            gpu_layers=0
+            gpu_layers=0            # CPU-only, works on GitHub
         )
-        topic = "${{ steps.topic.outputs.text }}"
-        prompt = textwrap.dedent(f"""
+        topic="${{ steps.topic.outputs.text }}"
+        prompt=textwrap.dedent(f"""
         You are an expert study coach.
         Write a focused Notion markdown study dashboard about "{topic}".
         Include:
-        - clear H1 title
+        - H1 title
         - 7-day countdown table
         - daily checklist
         - habit tracker
-        - reflection section
+        - reflection notes
         Output ONLY markdown.
         """)
-        md = model(prompt, max_new_tokens=512)
-        md = re.sub(r'^.*?\n\n','', md, 1, re.S)  # strip echoed prompt
+        md=model(prompt, max_new_tokens=512)
+        md=re.sub(r'^.*?\n\n','',md,1,re.S)  # strip echoed prompt
         open('dashboard.md','w').write(md.strip())
         PY
 
-    # 6️⃣  Zip the file
+    # 6) Zip the markdown file
     - name: Zip dashboard
       run: zip product.zip dashboard.md
 
-    # 7️⃣  Hand the zip back
+    # 7) Hand the zip back so you can download it
     - uses: actions/upload-artifact@v4
       with:
         name: product
         path: product.zip
+# ---------- END COPY HERE ----------
