@@ -30,9 +30,9 @@ jobs:
       - name: Pick topic
         id: topic
         run: |
-          echo "text=$(python3 - <<'PY'
+          python3 <<'PY' > topic.txt
 import requests, random
-subs = ["ADHD","GetStudying","biology"]
+subs = ["ADHD", "GetStudying", "biology"]
 hdr = {"User-Agent": "snap-study-bot"}
 titles = []
 for s in subs:
@@ -42,7 +42,7 @@ for s in subs:
         titles += [c["data"]["title"] for c in res.json()["data"]["children"]]
 print(random.choice(titles))
 PY
-)" >> "$GITHUB_OUTPUT"
+          echo "text=$(cat topic.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Write dashboard
         run: |
