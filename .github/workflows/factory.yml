@@ -1,52 +1,88 @@
 name: factory
 
 on:
-  workflow_dispatch:        # manual Run button
+  workflow_dispatch:                # Run button
   schedule:
-    - cron: '0 21 * * *'    # every day 21:00 KST
+    - cron: '0 21 * * *'            # every day 21:00 KST (UTC+9)
 
 jobs:
   run:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣  Get repo code
-      - uses: actions/checkout@v4
+    # 1️⃣  Check out repo
+    - uses: actions/checkout@v4
 
-      # 2️⃣  Install Ollama + free Phi-3-mini model (≈1.8 GB)
-      - name: Install Ollama and model
-        run: |
-          curl -fsSL https://ollama.ai/install.sh | sh
-          ollama pull phi3
+    # 2️⃣  Cache or download TinyLlama (350 MB once)
+    - name: Cache model
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/gguf
+        key: tinyllama-chat-q4
 
-      # 3️⃣  Pick a topic from Reddit
-      - name: Pick topic
-        id: topic
-        run: |
-          python - <<'PY'
-          import requests, random, os, json
-          subs = ["ADHD", "GetStudying", "biology"]
-          hdr  = {"User-Agent": "snap-study-bot"}
-          titles = []
-          for s in subs:
-              j = requests.get(f"https://www.reddit.com/r/{s}/top.json?t=day&limit=20",
-                               headers=hdr).json()
-              titles += [c["data"]["title"] for c in j["data"]["children"]]
-          choice = random.choice(titles)
-          print(f"::set-output name=text::{choice}")
-          PY
+    - name: Download model (first run only)
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/.cache/gguf
+        wget -q -O ~/.cache/gguf/tinyllama.gguf \
+          https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.q4_K_M.gguf
 
-      # 4️⃣  Generate dashboard markdown
-      - name: Write dashboard
-        run: |
-          ollama run phi3 "Write a focused Notion markdown study dashboard about '${{ steps.topic.outputs.text }}'." > dashboard.md
+    # 3️⃣  Install local inference library
+    - name: Install ctransformers
+      run: pip install --quiet ctransformers==0.2.27 accelerate==0.28.0
 
-      # 5️⃣  Zip it
-      - name: Zip dashboard
-        run: zip product.zip dashboard.md
+    # 4️⃣  Pick today’s Reddit topic
+    - name: Pick topic
+      id: topic
+      run: |
+        python - <<'PY'
+        import requests, random
+        subs = ["ADHD", "GetStudying", "biology"]
+        hdr  = {"User-Agent": "snap-study-bot"}
+        titles=[]
+        for s in subs:
+            url=f"https://www.reddit.com/r/{s}/top.json?t=day&limit=20"
+            j=requests.get(url,headers=hdr).json()
+            titles += [c["data"]["title"] for c in j["data"]["children"]]
+        choice=random.choice(titles)
+        print(f"::set-output name=text::{choice}")
+        PY
 
-      # 6️⃣  Hand zip back to you
-      - uses: actions/upload-artifact@v4
-        with:
-          name: product
-          path: product.zip
+    # 5️⃣  Generate dashboard locally (no API, no limits)
+    - name: Write dashboard
+      run: |
+        python - <<'PY'
+        from ctransformers import AutoModelForCausalLM
+        import os, re, textwrap
+        model = AutoModelForCausalLM.from_pretrained(
+            os.path.expanduser("~/.cache/gguf"),
+            model_file="tinyllama.gguf",
+            gpu_layers=0
+        )
+        topic = "${{ steps.topic.outputs.text }}"
+        prompt = textwrap.dedent(f"""
+        You are an expert study coach.
+        Write a focused Notion markdown study dashboard about "{topic}".
+        Include:
+        - clear H1 title
+        - 7-day countdown table
+        - daily checklist
+        - habit tracker
+        - reflection section
+        Output ONLY markdown.
+        """)
+        md = model(prompt, max_new_tokens=512)
+        md = re.sub(r'^.*?\n\n','', md, 1, re.S)  # strip echoed prompt
+        open('dashboard.md','w').write(md.strip())
+        PY
+
+    # 6️⃣  Zip the file
+    - name: Zip dashboard
+      run: zip product.zip dashboard.md
+
+    # 7️⃣  Hand the zip back
+    - uses: actions/upload-artifact@v4
+      with:
+        name: product
+        path: product.zip
